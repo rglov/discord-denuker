@@ -480,6 +480,7 @@ class DenukerApp:
 
     def _start_oauth_server(self):
         import oauth_server as oa
+        import threading
         client_id     = self.oauth_client_id_var.get().strip()
         client_secret = self.oauth_client_secret_var.get().strip()
 
@@ -494,18 +495,44 @@ class DenukerApp:
 
         self._save_config()
         self._oauth_server_thread = oa.start(client_id, client_secret, log_fn=self._log)
-        auth_url = oa.get_auth_url(client_id)
 
-        self._reg_server_lbl.configure(text="🟢 Server running", fg=GREEN)
-        self._log(f"\n── Registration server started on port 5173 ──")
-        self._log(f"  Link: {auth_url}")
-        self._log(f"  Members click it, authorize, and they're registered.")
-        self._log(f"  Keep the app open while members are registering.")
-
+        self._reg_server_lbl.configure(text="🟡 Starting tunnel…", fg="#FAA61A")
+        self._log("\n── Registration server started on port 5173 ──")
+        self._log("  Starting cloudflared tunnel (this takes ~5 seconds)…")
         self._start_reg_btn.configure(state="disabled")
         self._stop_reg_btn.configure(state="normal")
 
+        def _tunnel_thread():
+            public_url = oa.start_tunnel(log_fn=self._log)
+            # Schedule UI update back on the main thread
+            self.root.after(0, lambda: self._on_tunnel_ready(public_url, client_id))
+
+        threading.Thread(target=_tunnel_thread, daemon=True, name="denuker-tunnel").start()
+
+    def _on_tunnel_ready(self, public_url, client_id):
+        import oauth_server as oa
+        if public_url:
+            auth_url = oa.get_auth_url(client_id)
+            redirect_uri = oa.get_redirect_uri()
+            self._reg_server_lbl.configure(text="🟢 Server running", fg=GREEN)
+            self._reg_link_var.set(auth_url)
+            self._log(f"  Tunnel active: {public_url}")
+            self._log(f"  ┌─ Share this link with your members ─────────────────")
+            self._log(f"  │  {auth_url}")
+            self._log(f"  └──────────────────────────────────────────────────────")
+            self._log(f"  ⚠  In Discord Portal → OAuth2 → Redirects, add:")
+            self._log(f"     {redirect_uri}")
+        else:
+            self._reg_server_lbl.configure(text="⚠ Tunnel failed — using localhost", fg="#FAA61A")
+            auth_url = oa.get_auth_url(client_id)
+            self._reg_link_var.set(auth_url)
+            self._log("  ⚠ Tunnel failed. Using localhost fallback (only works if")
+            self._log("    members are on the same computer as you).")
+            self._log(f"  Link: {auth_url}")
+
     def _stop_oauth_server(self):
+        import oauth_server as oa
+        oa.stop_tunnel()
         self._oauth_server_thread = None
         self._reg_server_lbl.configure(text="⚫ Server stopped", fg=TEXT3)
         self._log("  Registration server stopped.")
@@ -1124,25 +1151,37 @@ STEP 1 — Get Your OAuth2 Credentials
 5. Click "Reset Secret"  →  copy it  →  paste into Denuker
 
 
-STEP 2 — Register the Redirect URI (one time)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Still on the OAuth2 page, under "Redirects":
+STEP 2 — Register the Redirect URI (each session)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Denuker creates a secure public tunnel (cloudflared) so
+members can register from anywhere — no port-forwarding needed.
+
+When you click "Start Registration Server", Denuker will:
+  • Start a local server on your computer
+  • Create a temporary public HTTPS link via cloudflared
+  • Show you the exact Redirect URI to add in Discord Portal
+
+In Discord Portal → OAuth2 → Redirects:
   1. Click "Add Redirect"
-  2. Enter exactly:   http://localhost:5173/callback
+  2. Paste the redirect URI shown in the Denuker log
+     (looks like: https://xxxx.trycloudflare.com/callback)
   3. Click "Save Changes"
 
-That's it — no hosting or GitHub Pages required.
+Note: The tunnel URL changes each session, so you'll need
+to update the redirect URI in Discord Portal each time.
+You can keep several old URLs in there — Discord allows it.
 
 
 STEP 3 — Get Members to Register
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. In Denuker, enter Client ID + Secret, then click
    "Start Registration Server"
-2. A registration link will appear — share it in your server
-   (pin it in #rules, #welcome, or #verification)
-3. Members click it, Discord asks permission, they click Authorize
-4. They see a success page and are immediately registered
-5. The counter in Denuker updates automatically
+2. Wait ~5 seconds for the tunnel to start
+3. Copy the registration link from the link field
+4. Share it in your server (pin it in #rules or #welcome)
+5. Members click it, Discord asks permission, they click Authorize
+6. They see a success page and are immediately registered
+7. The counter in Denuker updates automatically
 
 ⚠  IMPORTANT: The registration server must be running on
    YOUR computer when members click the link. The link only
