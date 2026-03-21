@@ -1074,7 +1074,7 @@ HOW MEMBER AUTO-REJOIN WORKS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Members authorize your Discord app once.
 If the server ever gets nuked, Denuker re-adds them
-automatically with their original roles — no invite link needed.
+automatically with their original roles — no invite needed.
 
 
 STEP 1 — Get Your OAuth2 Credentials
@@ -1082,57 +1082,52 @@ STEP 1 — Get Your OAuth2 Credentials
 1. Go to discord.com/developers/applications
 2. Open your Denuker bot application
 3. Click "OAuth2" in the left menu
-4. Copy the "Client ID" → paste into Denuker
-5. Click "Reset Secret" → copy the secret → paste into Denuker
+4. Copy the "Client ID"  →  paste into Denuker
+5. Click "Reset Secret"  →  copy it  →  paste into Denuker
 
 
-STEP 2 — Add the Redirect URI
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Still on OAuth2 page, under "Redirects", click Add Redirect and enter:
+STEP 2 — Register the Redirect URI (one time)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Still on the OAuth2 page, under "Redirects":
+  1. Click "Add Redirect"
+  2. Enter exactly:   http://localhost:5173/callback
+  3. Click "Save Changes"
 
-  https://rglov.github.io/discord-denuker/callback
-
-Click Save Changes.
-
-
-STEP 3 — Enable GitHub Pages (one time)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. Go to your GitHub repo → Settings → Pages
-2. Under "Source", choose "Deploy from a branch"
-3. Branch: main  /  Folder: /docs
-4. Click Save
-
-This hosts the authorization page members are sent to.
-It usually takes ~1 minute to go live.
+That's it — no hosting or GitHub Pages required.
 
 
-STEP 4 — Get Members to Register
+STEP 3 — Get Members to Register
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. In Denuker, enter Client ID + Secret and click
+1. In Denuker, enter Client ID + Secret, then click
    "Start Registration Server"
-2. A registration link appears — share it in your server
-   (post it in a channel like #verification or #welcome)
-3. Members click it, authorize with Discord, and they're registered
-4. The count of registered members updates automatically
+2. A registration link will appear — share it in your server
+   (pin it in #rules, #welcome, or #verification)
+3. Members click it, Discord asks permission, they click Authorize
+4. They see a success page and are immediately registered
+5. The counter in Denuker updates automatically
+
+⚠  IMPORTANT: The registration server must be running on
+   YOUR computer when members click the link. The link only
+   works while "Start Registration Server" is active.
 
 
-STEP 5 — Restore With Auto-Rejoin
+STEP 4 — Restore With Auto-Rejoin
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-When restoring, make sure:
+When restoring after a nuke, make sure:
   ✅  "Re-add registered members" is checked
   ✅  Client ID and Secret are filled in
+  ✅  The registration server does NOT need to be running
 
-Denuker will automatically re-add every registered member
-with their original roles. Members without tokens will
-still receive the invite link as a fallback.
+Denuker re-adds every registered member with their original
+roles. Anyone not registered still gets the invite link.
 
 
 NOTES
 ━━━━
-• Tokens are stored locally in ~/.denuker_tokens.json
-• They expire after 7 days but auto-refresh when used
-• Members who leave and rejoin do not need to re-authorize
-• You can check how many are registered in the main window
+• Tokens stored in  ~/.denuker_tokens.json  (owner-only)
+• Tokens expire after 7 days but auto-refresh on use
+• Members only need to authorize once — ever
+• Check the registered count in the main window anytime
 """
 
 HELP_TEXT = """
