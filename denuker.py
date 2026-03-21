@@ -387,6 +387,7 @@ class DenukerApp:
         row1 = tk.Frame(frame, bg=BG)
         row1.pack(fill=tk.X)
 
+        # Row 1 — credentials
         tk.Label(row1, text="OAuth2 Client ID:", bg=BG, fg=TEXT2,
                  font=("Helvetica", 9), width=18, anchor="w").pack(side=tk.LEFT)
         tk.Entry(row1, textvariable=self.oauth_client_id_var,
@@ -402,38 +403,63 @@ class DenukerApp:
 
         self._btn(row1, "? Setup", self._show_oauth_help, BG2).pack(side=tk.LEFT, padx=4)
 
-        # Row 2 — server controls
-        row2 = tk.Frame(frame, bg=BG)
+        # Row 2 — registration link (always visible once Client ID is set)
+        row2 = tk.Frame(frame, bg=BG2, padx=10, pady=8)
         row2.pack(fill=tk.X, pady=(8, 0))
 
+        tk.Label(row2, text="📋  Member Registration Link:",
+                 bg=BG2, fg=TEXT2, font=("Helvetica", 9, "bold")).pack(anchor="w")
+
+        link_row = tk.Frame(row2, bg=BG2)
+        link_row.pack(fill=tk.X, pady=(4, 0))
+
+        self._reg_link_var = tk.StringVar(value="Enter Client ID above to generate link")
+        self._reg_link_display = tk.Entry(
+            link_row, textvariable=self._reg_link_var,
+            bg=BG3, fg=ACCENT, readonlybackground=BG3,
+            font=("Courier", 9), relief="flat", state="readonly",
+        )
+        self._reg_link_display.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+
+        self._copy_btn = self._btn(link_row, "📋 Copy", self._copy_reg_link, ACCENT)
+        self._copy_btn.pack(side=tk.LEFT)
+
+        tk.Label(row2,
+                 text="Share this link in your server. Members click it once to register.",
+                 bg=BG2, fg=TEXT3, font=("Helvetica", 8)).pack(anchor="w", pady=(4, 0))
+
+        # Row 3 — server controls + count
+        row3 = tk.Frame(frame, bg=BG)
+        row3.pack(fill=tk.X, pady=(8, 0))
+
         self._start_reg_btn = self._btn(
-            row2, "▶  Start Registration Server", self._start_oauth_server, GREEN
+            row3, "▶  Start Server", self._start_oauth_server, GREEN
         )
         self._start_reg_btn.pack(side=tk.LEFT)
 
         self._stop_reg_btn = self._btn(
-            row2, "■  Stop", self._stop_oauth_server, BG3, state="disabled"
+            row3, "■  Stop", self._stop_oauth_server, BG3, state="disabled"
         )
         self._stop_reg_btn.pack(side=tk.LEFT, padx=6)
 
-        self._reg_count_lbl = tk.Label(
-            row2, textvariable=self._reg_count_var,
-            bg=BG, fg=TEXT3, font=("Helvetica", 9)
+        self._reg_server_lbl = tk.Label(
+            row3, text="", bg=BG, fg=TEXT3, font=("Helvetica", 9)
         )
-        self._reg_count_lbl.pack(side=tk.LEFT, padx=8)
+        self._reg_server_lbl.pack(side=tk.LEFT, padx=4)
 
-        # Row 3 — registration link (shown after server starts)
-        self._reg_link_var = tk.StringVar(value="")
-        self._reg_link_lbl = tk.Label(
-            frame, textvariable=self._reg_link_var,
-            bg=BG, fg=ACCENT, font=("Helvetica", 9),
-            cursor="hand2", justify="left",
+        self._reg_count_lbl = tk.Label(
+            row3, textvariable=self._reg_count_var,
+            bg=BG, fg=GREEN, font=("Helvetica", 9, "bold")
         )
-        self._reg_link_lbl.pack(anchor="w", pady=(4, 0))
-        self._reg_link_lbl.bind("<Button-1>", self._copy_reg_link)
+        self._reg_count_lbl.pack(side=tk.RIGHT)
+
+        # Update link whenever Client ID changes
+        self.oauth_client_id_var.trace_add("write", self._on_client_id_change)
 
         # Refresh the count from file on startup
         self._refresh_reg_count()
+        # Show link if client_id already loaded from config
+        self._on_client_id_change()
 
     def _refresh_reg_count(self):
         import oauth_server as oa
@@ -443,6 +469,14 @@ class DenukerApp:
             + (" ✅" if n > 0 else "")
         )
         self.root.after(10_000, self._refresh_reg_count)  # refresh every 10 s
+
+    def _on_client_id_change(self, *_):
+        import oauth_server as oa
+        client_id = self.oauth_client_id_var.get().strip()
+        if client_id:
+            self._reg_link_var.set(oa.get_auth_url(client_id))
+        else:
+            self._reg_link_var.set("Enter Client ID above to generate link")
 
     def _start_oauth_server(self):
         import oauth_server as oa
@@ -462,18 +496,18 @@ class DenukerApp:
         self._oauth_server_thread = oa.start(client_id, client_secret, log_fn=self._log)
         auth_url = oa.get_auth_url(client_id)
 
-        self._reg_link_var.set(f"📋 Registration link (click to copy):\n{auth_url}")
-        self._log(f"\n── Member registration server started ──")
-        self._log(f"  Share this link with your members:")
-        self._log(f"  {auth_url}")
+        self._reg_server_lbl.configure(text="🟢 Server running", fg=GREEN)
+        self._log(f"\n── Registration server started on port 5173 ──")
+        self._log(f"  Link: {auth_url}")
         self._log(f"  Members click it, authorize, and they're registered.")
+        self._log(f"  Keep the app open while members are registering.")
 
         self._start_reg_btn.configure(state="disabled")
         self._stop_reg_btn.configure(state="normal")
 
     def _stop_oauth_server(self):
         self._oauth_server_thread = None
-        self._reg_link_var.set("")
+        self._reg_server_lbl.configure(text="⚫ Server stopped", fg=TEXT3)
         self._log("  Registration server stopped.")
         self._start_reg_btn.configure(state="normal")
         self._stop_reg_btn.configure(state="disabled")
@@ -482,11 +516,15 @@ class DenukerApp:
         import oauth_server as oa
         client_id = self.oauth_client_id_var.get().strip()
         if not client_id:
+            from tkinter import messagebox
+            messagebox.showwarning("No Client ID", "Enter your OAuth2 Client ID first.")
             return
         url = oa.get_auth_url(client_id)
         self.root.clipboard_clear()
         self.root.clipboard_append(url)
-        self._reg_link_var.set(f"✅ Copied!  {url}")
+        # Flash confirmation
+        self._copy_btn.configure(text="✅ Copied!", bg=GREEN)
+        self.root.after(2000, lambda: self._copy_btn.configure(text="📋 Copy", bg=ACCENT))
 
     def _show_oauth_help(self):
         import tkinter as tk
