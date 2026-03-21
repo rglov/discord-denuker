@@ -121,16 +121,23 @@ class DenukerApp:
         self._next_backup_time: datetime | None = None
         self._schedule_running = False   # True while a scheduled backup is in progress
 
+        # OAuth server state
+        self._oauth_server_thread = None
+
         # Tk vars — created before _load_config reads into them
         import tkinter as tk
         self.token_var              = tk.StringVar()
         self.msg_limit_var          = tk.StringVar(value="500")
         self.restore_msgs           = tk.BooleanVar(value=True)
         self.restore_dry_run        = tk.BooleanVar(value=False)
+        self.restore_rejoin         = tk.BooleanVar(value=True)
         self.file_label_var         = tk.StringVar(value="No backup file selected")
         self.schedule_enabled       = tk.BooleanVar(value=False)
         self.schedule_interval_var  = tk.StringVar(value="24")
         self.schedule_msg_limit_var = tk.StringVar(value="500")
+        self.oauth_client_id_var    = tk.StringVar()
+        self.oauth_client_secret_var = tk.StringVar()
+        self._reg_count_var         = tk.StringVar(value="0 members registered")
 
         self._load_config()
         self._build_ui()
@@ -148,6 +155,8 @@ class DenukerApp:
         self.schedule_enabled.set(cfg.get("schedule_enabled", False))
         self.schedule_interval_var.set(str(cfg.get("schedule_interval_hours", 24)))
         self.schedule_msg_limit_var.set(str(cfg.get("schedule_msg_limit", 500)))
+        self.oauth_client_id_var.set(cfg.get("oauth_client_id", ""))
+        self.oauth_client_secret_var.set(cfg.get("oauth_client_secret", ""))
 
     def _save_config(self):
         cfg = _load_config_raw()
@@ -161,6 +170,8 @@ class DenukerApp:
                 cfg.get("schedule_guild_id")
             ),
             "backup_dir": _default_backup_dir(),
+            "oauth_client_id": self.oauth_client_id_var.get(),
+            "oauth_client_secret": self.oauth_client_secret_var.get(),
         })
         try:
             with open(CONFIG_FILE, "w") as f:
@@ -230,6 +241,7 @@ class DenukerApp:
 
         # ── Schedule section ──────────────────────────────────────────────────
         self._build_schedule_section()
+        self._build_member_rejoin_section()
 
         # ── Log ──────────────────────────────────────────────────────────────
         log_outer = tk.Frame(self.root, bg=BG, padx=12)
@@ -284,6 +296,11 @@ class DenukerApp:
                        variable=self.restore_msgs,
                        bg=BG, fg=TEXT2, selectcolor=BG2,
                        activebackground=BG, activeforeground=TEXT).pack(anchor="w", pady=2)
+        tk.Checkbutton(parent, text="Re-add registered members automatically",
+                       variable=self.restore_rejoin,
+                       bg=BG, fg=GREEN, selectcolor=BG2,
+                       activebackground=BG, activeforeground=TEXT,
+                       font=("Helvetica", 9, "bold")).pack(anchor="w", pady=2)
         tk.Checkbutton(parent,
                        text="Dry Run — preview only, nothing will change",
                        variable=self.restore_dry_run,
@@ -352,6 +369,141 @@ class DenukerApp:
             row2, "📅  Set Up Background Schedule (runs without the app)",
             self._show_system_schedule, BG2,
         ).pack(side=tk.RIGHT)
+
+    def _build_member_rejoin_section(self):
+        import tkinter as tk
+        import oauth_server as oa
+
+        frame = tk.LabelFrame(
+            self.root,
+            text="  👥  MEMBER AUTO-REJOIN  ",
+            font=("Helvetica", 10, "bold"),
+            bg=BG, fg=ACCENT,
+            padx=12, pady=10,
+        )
+        frame.pack(fill=tk.X, padx=12, pady=(0, 6))
+
+        # Row 1 — credentials
+        row1 = tk.Frame(frame, bg=BG)
+        row1.pack(fill=tk.X)
+
+        tk.Label(row1, text="OAuth2 Client ID:", bg=BG, fg=TEXT2,
+                 font=("Helvetica", 9), width=18, anchor="w").pack(side=tk.LEFT)
+        tk.Entry(row1, textvariable=self.oauth_client_id_var,
+                 bg=BG2, fg=TEXT, insertbackground=TEXT, width=22, relief="flat",
+                 highlightbackground=TEXT3, highlightthickness=1).pack(side=tk.LEFT, padx=4)
+
+        tk.Label(row1, text="  Client Secret:", bg=BG, fg=TEXT2,
+                 font=("Helvetica", 9)).pack(side=tk.LEFT)
+        tk.Entry(row1, textvariable=self.oauth_client_secret_var,
+                 show="•", bg=BG2, fg=TEXT, insertbackground=TEXT, width=28,
+                 relief="flat", highlightbackground=TEXT3,
+                 highlightthickness=1).pack(side=tk.LEFT, padx=4)
+
+        self._btn(row1, "? Setup", self._show_oauth_help, BG2).pack(side=tk.LEFT, padx=4)
+
+        # Row 2 — server controls
+        row2 = tk.Frame(frame, bg=BG)
+        row2.pack(fill=tk.X, pady=(8, 0))
+
+        self._start_reg_btn = self._btn(
+            row2, "▶  Start Registration Server", self._start_oauth_server, GREEN
+        )
+        self._start_reg_btn.pack(side=tk.LEFT)
+
+        self._stop_reg_btn = self._btn(
+            row2, "■  Stop", self._stop_oauth_server, BG3, state="disabled"
+        )
+        self._stop_reg_btn.pack(side=tk.LEFT, padx=6)
+
+        self._reg_count_lbl = tk.Label(
+            row2, textvariable=self._reg_count_var,
+            bg=BG, fg=TEXT3, font=("Helvetica", 9)
+        )
+        self._reg_count_lbl.pack(side=tk.LEFT, padx=8)
+
+        # Row 3 — registration link (shown after server starts)
+        self._reg_link_var = tk.StringVar(value="")
+        self._reg_link_lbl = tk.Label(
+            frame, textvariable=self._reg_link_var,
+            bg=BG, fg=ACCENT, font=("Helvetica", 9),
+            cursor="hand2", justify="left",
+        )
+        self._reg_link_lbl.pack(anchor="w", pady=(4, 0))
+        self._reg_link_lbl.bind("<Button-1>", self._copy_reg_link)
+
+        # Refresh the count from file on startup
+        self._refresh_reg_count()
+
+    def _refresh_reg_count(self):
+        import oauth_server as oa
+        n = oa.get_registered_count()
+        self._reg_count_var.set(
+            f"{n} member{'s' if n != 1 else ''} registered"
+            + (" ✅" if n > 0 else "")
+        )
+        self.root.after(10_000, self._refresh_reg_count)  # refresh every 10 s
+
+    def _start_oauth_server(self):
+        import oauth_server as oa
+        client_id     = self.oauth_client_id_var.get().strip()
+        client_secret = self.oauth_client_secret_var.get().strip()
+
+        if not client_id or not client_secret:
+            from tkinter import messagebox
+            messagebox.showwarning(
+                "OAuth2 Credentials Required",
+                "Enter your OAuth2 Client ID and Client Secret first.\n\n"
+                "Click '? Setup' for instructions.",
+            )
+            return
+
+        self._save_config()
+        self._oauth_server_thread = oa.start(client_id, client_secret, log_fn=self._log)
+        auth_url = oa.get_auth_url(client_id)
+
+        self._reg_link_var.set(f"📋 Registration link (click to copy):\n{auth_url}")
+        self._log(f"\n── Member registration server started ──")
+        self._log(f"  Share this link with your members:")
+        self._log(f"  {auth_url}")
+        self._log(f"  Members click it, authorize, and they're registered.")
+
+        self._start_reg_btn.configure(state="disabled")
+        self._stop_reg_btn.configure(state="normal")
+
+    def _stop_oauth_server(self):
+        self._oauth_server_thread = None
+        self._reg_link_var.set("")
+        self._log("  Registration server stopped.")
+        self._start_reg_btn.configure(state="normal")
+        self._stop_reg_btn.configure(state="disabled")
+
+    def _copy_reg_link(self, _event=None):
+        import oauth_server as oa
+        client_id = self.oauth_client_id_var.get().strip()
+        if not client_id:
+            return
+        url = oa.get_auth_url(client_id)
+        self.root.clipboard_clear()
+        self.root.clipboard_append(url)
+        self._reg_link_var.set(f"✅ Copied!  {url}")
+
+    def _show_oauth_help(self):
+        import tkinter as tk
+        from tkinter import scrolledtext
+        win = tk.Toplevel(self.root)
+        win.title("Member Auto-Rejoin Setup")
+        win.geometry("560x540")
+        win.configure(bg=BG)
+        win.grab_set()
+        tk.Label(win, text="Member Auto-Rejoin Setup",
+                 font=("Helvetica", 13, "bold"), bg=BG, fg=ACCENT).pack(pady=(16, 4))
+        box = scrolledtext.ScrolledText(win, bg=BG2, fg=TEXT2, font=("Courier", 10),
+                                        relief="flat", padx=14, pady=10, wrap=tk.WORD)
+        box.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
+        box.insert("end", OAUTH_HELP_TEXT)
+        box.configure(state="disabled")
+        self._btn(win, "Close", win.destroy, ACCENT).pack(pady=(0, 12))
 
     def _style(self):
         from tkinter import ttk
@@ -699,11 +851,13 @@ class DenukerApp:
 
         guild_name, guild_id = self._selected_guild
         backup_server = self._backup_data["meta"].get("server_name", "Unknown")
-        restore_msgs  = self.restore_msgs.get()
-        dry_run       = self.restore_dry_run.get()
+        restore_msgs   = self.restore_msgs.get()
+        do_rejoin      = self.restore_rejoin.get()
+        dry_run        = self.restore_dry_run.get()
+        client_id      = self.oauth_client_id_var.get().strip()
+        client_secret  = self.oauth_client_secret_var.get().strip()
 
         if dry_run:
-            # Dry run — no confirmation needed, no network calls
             self._set_busy(True)
             self._log("\n── Dry Run: previewing restore ──")
 
@@ -717,14 +871,26 @@ class DenukerApp:
             threading.Thread(target=run_dry, daemon=True).start()
             return
 
+        import oauth_server as oa
+        registered = oa.get_registered_count()
+        rejoin_note = (
+            f"• Re-add {registered} registered members: YES\n"
+            if (do_rejoin and registered > 0) else
+            "• Member re-add: NO (no registered members)\n"
+            if do_rejoin else
+            "• Member re-add: NO\n"
+        )
+
         if not messagebox.askyesno(
             "Confirm Restore",
-            f"This will recreate the server structure from your backup.\n\n"
-            f"📦  Backup from:  {backup_server}\n"
-            f"🎯  Restore into: {guild_name}\n\n"
-            "• Roles, channels, and categories will be recreated\n"
-            "• Existing content will NOT be deleted first\n"
-            f"• Messages: {'YES (will take longer)' if restore_msgs else 'NO'}\n\n"
+            f"This will WIPE and recreate your server from the backup.\n\n"
+            f"📦  Backup:  {backup_server}\n"
+            f"🎯  Server:  {guild_name}\n\n"
+            "⚠  ALL existing channels and categories will be deleted first!\n\n"
+            f"• Roles recreated: YES\n"
+            f"• Channels recreated: YES\n"
+            f"• Messages: {'YES (slower)' if restore_msgs else 'NO'}\n"
+            f"{rejoin_note}\n"
             "Proceed?"
         ):
             return
@@ -736,7 +902,10 @@ class DenukerApp:
         def run():
             try:
                 asyncio.run(rs.restore_server(
-                    token, guild_id, self._backup_data, restore_msgs, self._log
+                    token, guild_id, self._backup_data,
+                    restore_msgs, do_rejoin,
+                    client_id, client_secret,
+                    self._log,
                 ))
                 self.root.after(0, self._on_restore_done)
             except Exception as exc:
@@ -899,6 +1068,72 @@ NOTES
 
 
 # ── Help text ─────────────────────────────────────────────────────────────────
+
+OAUTH_HELP_TEXT = """
+HOW MEMBER AUTO-REJOIN WORKS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Members authorize your Discord app once.
+If the server ever gets nuked, Denuker re-adds them
+automatically with their original roles — no invite link needed.
+
+
+STEP 1 — Get Your OAuth2 Credentials
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Go to discord.com/developers/applications
+2. Open your Denuker bot application
+3. Click "OAuth2" in the left menu
+4. Copy the "Client ID" → paste into Denuker
+5. Click "Reset Secret" → copy the secret → paste into Denuker
+
+
+STEP 2 — Add the Redirect URI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Still on OAuth2 page, under "Redirects", click Add Redirect and enter:
+
+  https://rglov.github.io/discord-denuker/callback
+
+Click Save Changes.
+
+
+STEP 3 — Enable GitHub Pages (one time)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Go to your GitHub repo → Settings → Pages
+2. Under "Source", choose "Deploy from a branch"
+3. Branch: main  /  Folder: /docs
+4. Click Save
+
+This hosts the authorization page members are sent to.
+It usually takes ~1 minute to go live.
+
+
+STEP 4 — Get Members to Register
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. In Denuker, enter Client ID + Secret and click
+   "Start Registration Server"
+2. A registration link appears — share it in your server
+   (post it in a channel like #verification or #welcome)
+3. Members click it, authorize with Discord, and they're registered
+4. The count of registered members updates automatically
+
+
+STEP 5 — Restore With Auto-Rejoin
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When restoring, make sure:
+  ✅  "Re-add registered members" is checked
+  ✅  Client ID and Secret are filled in
+
+Denuker will automatically re-add every registered member
+with their original roles. Members without tokens will
+still receive the invite link as a fallback.
+
+
+NOTES
+━━━━
+• Tokens are stored locally in ~/.denuker_tokens.json
+• They expire after 7 days but auto-refresh when used
+• Members who leave and rejoin do not need to re-authorize
+• You can check how many are registered in the main window
+"""
 
 HELP_TEXT = """
 STEP 1 — Create a Discord Bot
